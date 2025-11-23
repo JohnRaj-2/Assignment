@@ -1,27 +1,30 @@
-import pool from '../../../../lib/db';
+import pool from '../lib/db';
 
-export default async function handler(req, res) {
-  const { code } = req.query;
-  if (req.method === 'GET') {
-    try {
-      const { rows } = await pool.query('SELECT code, url, clicks, created_at, last_clicked FROM links WHERE code=$1', [code]);
-      if (!rows.length) return res.status(404).json({ error: 'not found' });
-      return res.status(200).json(rows[0]);
-    } catch (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'server error' });
+export async function getServerSideProps({ params, res }) {
+  const code = params.code;
+  const client = pool;
+  try {
+    const { rows } = await client.query('SELECT url FROM links WHERE code=$1', [code]);
+    if (!rows.length) {
+      res.statusCode = 404;
+      return { props: { notFound: true } };
     }
-  } else if (req.method === 'DELETE') {
-    try {
-      const { rowCount } = await pool.query('DELETE FROM links WHERE code=$1', [code]);
-      if (!rowCount) return res.status(404).json({ error: 'not found' });
-      return res.status(204).end();
-    } catch (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'server error' });
-    }
-  } else {
-    res.setHeader('Allow', ['GET', 'DELETE']);
-    res.status(405).end(`Method ${req.method} Not Allowed`);
+    const url = rows[0].url;
+    await client.query('UPDATE links SET clicks = clicks + 1, last_clicked = now() WHERE code=$1', [code]);
+    return {
+      redirect: {
+        destination: url,
+        permanent: false
+      }
+    };
+  } catch (err) {
+    console.error(err);
+    res.statusCode = 500;
+    return { props: { notFound: true } };
   }
+}
+
+export default function RedirectPage({ notFound }) {
+  if (notFound) return <h1>404 Not Found</h1>;
+  return <p>Redirecting...</p>;
 }
