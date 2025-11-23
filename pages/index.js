@@ -1,89 +1,51 @@
-import { useEffect, useState } from 'react';
+import pool from '../../../lib/db';
 
-export default function Home() {
-  const [links, setLinks] = useState([]);
-  const [url, setUrl] = useState('');
-  const [code, setCode] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState(null);
+const CODE_REGEX = /^[A-Za-z0-9]{6,8}$/;
 
-  async function fetchLinks() {
-    const res = await fetch('/api/links');
-    const data = await res.json();
-    setLinks(data);
-  }
-
-  useEffect(() => { fetchLinks(); }, []);
-
-  async function handleCreate(e) {
-    e.preventDefault();
-    setLoading(true);
-    setMessage(null);
+export default async function handler(req, res) {
+  if (req.method === 'GET') {
     try {
-      const res = await fetch('/api/links', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, code: code || undefined })
-      });
-      if (res.status === 201) {
-        const created = await res.json();
-        setMessage({ type: 'success', text: `Created ${created.code}` });
-        setUrl(''); setCode('');
-        fetchLinks();
-      } else {
-        const err = await res.json();
-        setMessage({ type: 'error', text: err.error || 'Error' });
-      }
+      const { rows } = await pool.query('SELECT code, url, clicks, created_at, last_clicked FROM links ORDER BY created_at DESC');
+      return res.status(200).json(rows);
     } catch (err) {
-      setMessage({ type: 'error', text: 'Network error' });
-    } finally {
-      setLoading(false);
+      console.error(err);
+      return res.status(500).json({ error: 'server error' });
     }
+  } else if (req.method === 'POST') {
+    const body = req.body || {};
+    const { url, code } = body;
+
+    if (!url || typeof url !== 'string') return res.status(400).json({ error: 'url required' });
+    try {
+      new URL(url);
+    } catch (e) {
+      return res.status(400).json({ error: 'invalid url' });
+    }
+
+    let shortCode = code;
+    if (shortCode) {
+      if (!CODE_REGEX.test(shortCode)) return res.status(400).json({ error: 'code invalid' });
+    } else {
+      // generate using nanoid
+      const { customAlphabet } = require('nanoid');
+      const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+      shortCode = customAlphabet(alphabet, 7)();
+    }
+
+    try {
+      const q = 'INSERT INTO links(code, url) VALUES($1, $2) RETURNING code, url, clicks, created_at, last_clicked';
+      const { rows } = await pool.query(q, [shortCode, url]);
+      return res.status(201).json(rows[0]);
+    } catch (err) {
+      // duplicate key error code for Postgres is '23505'
+      if (err && err.code === '23505') {
+        return res.status(409).json({ error: 'code already exists' });
+      }
+      console.error(err);
+      return res.status(500).json({ error: 'server error' });
+    }
+  } else {
+    res.setHeader('Allow', ['GET', 'POST']);
+    res.status(405).end(`Method ${req.method} Not Allowed`);
   }
-
-  async function handleDelete(c) {
-    if (!confirm('Delete this link?')) return;
-    await fetch(`/api/links/${c}`, { method: 'DELETE' });
-    fetchLinks();
-  }
-
-  return (
-    <main style={{ padding: 20, fontFamily: 'Arial, sans-serif' }}>
-      <h1>TinyLink - Dashboard</h1>
-      <form onSubmit={handleCreate} style={{ marginBottom: 20 }}>
-        <div>
-          <label>URL: </label>
-          <input value={url} onChange={e => setUrl(e.target.value)} style={{ width: 400 }} placeholder="https://example.com/..." />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <label>Custom Code (optional): </label>
-          <input value={code} onChange={e => setCode(e.target.value)} placeholder="6-8 alphanumeric" />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <button type="submit" disabled={loading}>{loading ? 'Creating...' : 'Create'}</button>
-        </div>
-        {message && <div style={{ marginTop: 8, color: message.type === 'error' ? 'red' : 'green' }}>{message.text}</div>}
-      </form>
-
-      <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', width: '100%' }}>
-        <thead>
-          <tr><th>Code</th><th>Target URL</th><th>Clicks</th><th>Last Clicked</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-          {links.map(l => (
-            <tr key={l.code}>
-              <td><a href={`/code/${l.code}`}>{l.code}</a></td>
-              <td style={{ maxWidth: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.url}>{l.url}</td>
-              <td>{l.clicks}</td>
-              <td>{l.last_clicked ? new Date(l.last_clicked).toLocaleString() : '-'}</td>
-              <td>
-                <button onClick={() => { navigator.clipboard?.writeText(`${location.origin}/${l.code}`); alert('Copied'); }}>Copy</button>
-                <button onClick={() => handleDelete(l.code)} style={{ marginLeft: 8 }}>Delete</button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </main>
-  );
 }
